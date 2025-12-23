@@ -133,7 +133,16 @@ document
     renderEvents([]);
   });
 
+// Check auth status (for disconnect detection)
+async function checkAuthStatus() {
+  const res = await fetch("/api/auth/status");
+  const { authenticated } = await res.json();
+  loginSection.style.display = authenticated ? "none" : "block";
+  authenticatedSection.style.display = authenticated ? "block" : "none";
+}
+
 // Start
 init();
 setInterval(fetchWebhookEvents, 2000);
+setInterval(checkAuthStatus, 2000);
 fetchWebhookEvents();

@@ -12,6 +12,7 @@ const MAX_EVENTS = 50;
 
 // Store access token for webhook use
 let storedAccessToken = null;
+let disconnectedViaWebhook = false;
 
 // Helper: Disconnect app from Jobber
 async function disconnectFromJobber(accessToken) {
@@ -101,6 +102,7 @@ app.get("/auth/callback", async (req, res) => {
 
     req.session.accessToken = response.data.access_token;
     storedAccessToken = response.data.access_token;
+    disconnectedViaWebhook = false;
     console.log("Access token stored");
     res.redirect("/");
   } catch (err) {
@@ -111,7 +113,9 @@ app.get("/auth/callback", async (req, res) => {
 
 // Auth status
 app.get("/api/auth/status", (req, res) => {
-  res.json({ authenticated: !!req.session.accessToken });
+  res.json({
+    authenticated: !!req.session.accessToken && !disconnectedViaWebhook,
+  });
 });
 
 // Logout
@@ -132,6 +136,7 @@ app.post("/webhooks/app-disconnect", (req, res) => {
     req.body.data?.webHookEvent?.accountId
   );
   storedAccessToken = null;
+  disconnectedViaWebhook = true;
   addWebhookEvent(req, null);
 });
 
