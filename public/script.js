@@ -263,3 +263,132 @@ inputs.forEach((input) => {
     }
   });
 });
+
+// Webhook Events functionality
+const webhookEventsContainer = document.getElementById("webhook-events");
+const eventCountSpan = document.getElementById("event-count");
+const clearEventsBtn = document.getElementById("clear-events-btn");
+
+let lastEventCount = 0;
+let knownEventIds = new Set();
+
+// Poll for webhook events
+async function fetchWebhookEvents() {
+  try {
+    const response = await fetch("/api/webhooks/events");
+    const data = await response.json();
+
+    if (data.events && data.events.length > 0) {
+      renderWebhookEvents(data.events);
+      eventCountSpan.textContent = `${data.events.length} event${
+        data.events.length !== 1 ? "s" : ""
+      }`;
+    } else {
+      eventCountSpan.textContent = "No events yet";
+    }
+  } catch (error) {
+    console.error("Error fetching webhook events:", error);
+  }
+}
+
+// Render webhook events
+function renderWebhookEvents(events) {
+  if (events.length === 0) {
+    webhookEventsContainer.innerHTML = `
+      <div class="text-center text-muted py-4">
+        <i class="fas fa-inbox fa-3x mb-3"></i>
+        <p>Waiting for webhook events...</p>
+        <p class="small">Create a property in Jobber to see events here</p>
+      </div>
+    `;
+    return;
+  }
+
+  webhookEventsContainer.innerHTML = events
+    .map((event) => {
+      const isNew = !knownEventIds.has(event.id);
+      if (isNew) knownEventIds.add(event.id);
+
+      const time = new Date(event.receivedAt).toLocaleString();
+      const topic = event.headers["x-jobber-topic"] || "Unknown";
+      const address = event.propertyDetails?.address;
+
+      // Format address if available
+      let addressHtml = "";
+      if (address) {
+        const addressParts = [
+          address.street1,
+          address.street2,
+          address.city,
+          address.province,
+          address.postalCode,
+          address.country,
+        ].filter(Boolean);
+        addressHtml = `
+          <div class="property-address mt-2 p-2" style="background: #e8f5e9; border-radius: 8px;">
+            <strong><i class="fas fa-map-marker-alt text-success"></i> Property Address:</strong>
+            <div class="mt-1">${
+              addressParts.join(", ") || "No address available"
+            }</div>
+          </div>
+        `;
+      } else {
+        addressHtml = `
+          <div class="property-address mt-2 p-2" style="background: #fff3e0; border-radius: 8px;">
+            <i class="fas fa-exclamation-circle text-warning"></i> 
+            <em>Property details not available (authenticate first)</em>
+          </div>
+        `;
+      }
+
+      return `
+      <div class="webhook-event ${isNew ? "new" : ""}">
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <strong><i class="fas fa-home"></i> ${topic}</strong>
+          </div>
+          <span class="webhook-event-time">${time}</span>
+        </div>
+        ${addressHtml}
+        <details class="mt-2">
+          <summary style="cursor: pointer; color: #666;">
+            <i class="fas fa-code"></i> Raw webhook payload
+          </summary>
+          <div class="webhook-event-body">${JSON.stringify(
+            event.webhookPayload || event.body,
+            null,
+            2
+          )}</div>
+        </details>
+      </div>
+    `;
+    })
+    .join("");
+}
+
+// Clear webhook events
+async function clearWebhookEvents() {
+  try {
+    const response = await fetch("/api/webhooks/events", { method: "DELETE" });
+    if (response.ok) {
+      knownEventIds.clear();
+      webhookEventsContainer.innerHTML = `
+        <div class="text-center text-muted py-4">
+          <i class="fas fa-inbox fa-3x mb-3"></i>
+          <p>Waiting for webhook events...</p>
+          <p class="small">Create a property in Jobber to see events here</p>
+        </div>
+      `;
+      eventCountSpan.textContent = "No events yet";
+    }
+  } catch (error) {
+    console.error("Error clearing events:", error);
+  }
+}
+
+// Event listener for clear button
+clearEventsBtn.addEventListener("click", clearWebhookEvents);
+
+// Start polling for webhook events (every 2 seconds)
+setInterval(fetchWebhookEvents, 2000);
+fetchWebhookEvents(); // Initial fetch

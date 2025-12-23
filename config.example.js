@@ -1,9 +1,8 @@
 module.exports = {
   // Jobber OAuth Configuration
   // Get these from your Jobber app settings at https://developer.getjobber.com/
-  JOBBER_CLIENT_ID: "f1e669eb-8e00-46bf-98b9-9ec972940d5c",
-  JOBBER_CLIENT_SECRET:
-    "c9d9642964e0b868b0cbc469e861f4b4e901b493fdd648a77622fb011c49559d",
+  JOBBER_CLIENT_ID: "your client id here",
+  JOBBER_CLIENT_SECRET: "your client secret here",
 
   // OAuth URLs
   JOBBER_AUTH_URL: "https://api.getjobber.com/api/oauth/authorize",

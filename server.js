@@ -7,6 +7,64 @@ const config = require("./config");
 
 const app = express();
 
+// Store webhook events in memory (for demo purposes)
+const webhookEvents = [];
+const MAX_EVENTS = 50; // Keep last 50 events
+
+// Store access token for webhook use (in production, use a proper store)
+let storedAccessToken = null;
+
+// Helper function to fetch property details from Jobber
+async function fetchPropertyDetails(propertyId) {
+  if (!storedAccessToken) {
+    console.log("No access token available to fetch property details");
+    return null;
+  }
+
+  const query = `
+    query property($id: EncodedId!) {
+      property(id: $id) {
+        address {
+          street1
+          street2
+          city
+          province
+          country
+          postalCode
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await axios.post(
+      config.JOBBER_GRAPHQL_URL,
+      {
+        query: query,
+        variables: { id: propertyId },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${storedAccessToken}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
+        },
+      }
+    );
+
+    if (response.data.errors) {
+      console.error("GraphQL errors fetching property:", response.data.errors);
+      return null;
+    }
+
+    return response.data.data.property;
+  } catch (error) {
+    console.error("Error fetching property details:", error.message);
+    return null;
+  }
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -72,6 +130,10 @@ app.get("/auth/callback", async (req, res) => {
     // Store tokens in session
     req.session.accessToken = access_token;
     req.session.refreshToken = refresh_token;
+
+    // Also store token for webhook use
+    storedAccessToken = access_token;
+    console.log("Access token stored for webhook property lookups");
 
     res.redirect("/?authenticated=true");
   } catch (error) {
@@ -191,6 +253,55 @@ app.post("/api/vehicles", async (req, res) => {
       details: error.response?.data || error.message,
     });
   }
+});
+
+// Webhook endpoint for PROPERTY_CREATE events
+app.post("/webhooks/property", async (req, res) => {
+  // Acknowledge receipt immediately (Jobber expects quick response)
+  res.status(200).json({ received: true });
+
+  const propertyId = req.body.itemId;
+  console.log("Webhook received for property:", propertyId);
+
+  // Fetch property details from Jobber API
+  let propertyDetails = null;
+  if (propertyId) {
+    propertyDetails = await fetchPropertyDetails(propertyId);
+    console.log("Property details fetched:", propertyDetails);
+  }
+
+  const event = {
+    id: Date.now(),
+    receivedAt: new Date().toISOString(),
+    headers: {
+      "content-type": req.headers["content-type"],
+      "x-jobber-topic": req.headers["x-jobber-topic"],
+      "x-jobber-hmac-sha256": req.headers["x-jobber-hmac-sha256"],
+    },
+    webhookPayload: req.body,
+    propertyDetails: propertyDetails,
+  };
+
+  console.log("Full event:", JSON.stringify(event, null, 2));
+
+  // Add to events array (most recent first)
+  webhookEvents.unshift(event);
+
+  // Keep only the last MAX_EVENTS
+  if (webhookEvents.length > MAX_EVENTS) {
+    webhookEvents.pop();
+  }
+});
+
+// Get webhook events for the frontend
+app.get("/api/webhooks/events", (req, res) => {
+  res.json({ events: webhookEvents });
+});
+
+// Clear webhook events
+app.delete("/api/webhooks/events", (req, res) => {
+  webhookEvents.length = 0;
+  res.json({ success: true });
 });
 
 // Start server

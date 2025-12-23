@@ -92,6 +92,55 @@
       .success-message {
         display: none;
       }
+      .webhook-events-container {
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      .webhook-event {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 10px;
+        border-left: 4px solid #38ef7d;
+        animation: slideIn 0.3s ease;
+      }
+      .webhook-event.new {
+        animation: pulse 0.5s ease;
+      }
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateX(-20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(0);
+        }
+      }
+      @keyframes pulse {
+        0% {
+          background: #d4edda;
+        }
+        100% {
+          background: #f8f9fa;
+        }
+      }
+      .webhook-event-time {
+        font-size: 0.8rem;
+        color: #6c757d;
+      }
+      .webhook-event-body {
+        font-family: "Monaco", "Consolas", monospace;
+        font-size: 0.85rem;
+        background: #2d2d2d;
+        color: #f8f8f2;
+        padding: 10px;
+        border-radius: 5px;
+        margin-top: 10px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
     </style>
   </head>
   <body>
@@ -212,6 +261,34 @@
             <div class="alert alert-danger">
               <i class="fas fa-exclamation-triangle"></i>
               <span id="error-text"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Webhook Events Card -->
+      <div class="card mt-4">
+        <div
+          class="card-header"
+          style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%)"
+        >
+          <h4 class="mb-0"><i class="fas fa-bell"></i> Webhook Events</h4>
+          <p class="mb-0 small">PROPERTY_CREATE events will appear here</p>
+        </div>
+        <div class="card-body p-4">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <span id="event-count" class="text-muted">No events yet</span>
+            <button id="clear-events-btn" class="btn btn-sm btn-outline-danger">
+              <i class="fas fa-trash"></i> Clear
+            </button>
+          </div>
+          <div id="webhook-events" class="webhook-events-container">
+            <div class="text-center text-muted py-4">
+              <i class="fas fa-inbox fa-3x mb-3"></i>
+              <p>Waiting for webhook events...</p>
+              <p class="small">
+                Create a property in Jobber to see events here
+              </p>
             </div>
           </div>
         </div>
