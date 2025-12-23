@@ -14,6 +14,11 @@ const MAX_EVENTS = 50;
 let storedAccessToken = null;
 let disconnectedViaWebhook = false;
 
+// ATTOM API configuration
+const ATTOM_API_KEY = "f0e8cff35b5080b3ede1b209dadb875f";
+const ATTOM_API_URL =
+  "https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/basicprofile";
+
 // Helper: Disconnect app from Jobber
 async function disconnectFromJobber(accessToken) {
   if (!accessToken) return false;
@@ -40,7 +45,44 @@ async function disconnectFromJobber(accessToken) {
   }
 }
 
-// Helper: Fetch property details
+// Helper: Fetch property data from ATTOM API
+async function fetchAttomPropertyData(address) {
+  if (!address || !address.street1) return null;
+
+  try {
+    // Format address1: street number and name (e.g., "1001 W JEFFERSON AVE")
+    const address1 = address.street1.toUpperCase();
+
+    // Format address2: city, state/province postalCode (e.g., "DETROIT, MI 48226")
+    const address2Parts = [
+      address.city,
+      address.province,
+      address.postalCode,
+    ].filter(Boolean);
+    const address2 = address2Parts.join(", ").toUpperCase();
+
+    console.log("Fetching ATTOM data for:", { address1, address2 });
+
+    const response = await axios.get(ATTOM_API_URL, {
+      params: { address1, address2 },
+      headers: {
+        Accept: "application/json",
+        apikey: ATTOM_API_KEY,
+      },
+    });
+
+    console.log("ATTOM response received");
+    return response.data;
+  } catch (error) {
+    console.error(
+      "Error fetching ATTOM data:",
+      error.response?.data || error.message
+    );
+    return { error: error.response?.data || error.message };
+  }
+}
+
+// Helper: Fetch property details from Jobber
 async function fetchPropertyDetails(propertyId) {
   if (!storedAccessToken) return null;
 
@@ -147,10 +189,17 @@ app.post("/webhooks/property", async (req, res) => {
   const propertyDetails = propertyId
     ? await fetchPropertyDetails(propertyId)
     : null;
-  addWebhookEvent(req, propertyDetails);
+
+  // Fetch ATTOM property data if we have an address
+  let attomData = null;
+  if (propertyDetails?.address) {
+    attomData = await fetchAttomPropertyData(propertyDetails.address);
+  }
+
+  addWebhookEvent(req, propertyDetails, attomData);
 });
 
-function addWebhookEvent(req, propertyDetails) {
+function addWebhookEvent(req, propertyDetails, attomData = null) {
   webhookEvents.unshift({
     id: Date.now(),
     receivedAt: new Date().toISOString(),
@@ -159,6 +208,7 @@ function addWebhookEvent(req, propertyDetails) {
     },
     webhookPayload: req.body,
     propertyDetails,
+    attomData,
   });
   if (webhookEvents.length > MAX_EVENTS) webhookEvents.pop();
 }

@@ -78,7 +78,9 @@ function renderEvents(events) {
       const time = new Date(event.receivedAt).toLocaleString();
       const topic = event.headers["x-jobber-topic"] || "Unknown";
       const address = event.propertyDetails?.address;
+      const attomData = event.attomData;
 
+      // Jobber address section
       let addressHtml = "";
       if (address) {
         const parts = [
@@ -91,7 +93,7 @@ function renderEvents(events) {
         ].filter(Boolean);
         addressHtml = `
           <div class="mt-2 p-2" style="background: #e8f5e9; border-radius: 8px;">
-            <strong><i class="fas fa-map-marker-alt text-success"></i> Property Address:</strong>
+            <strong><i class="fas fa-map-marker-alt text-success"></i> Jobber Address:</strong>
             <div class="mt-1">${parts.join(", ") || "No address"}</div>
           </div>`;
       } else {
@@ -102,6 +104,76 @@ function renderEvents(events) {
           </div>`;
       }
 
+      // ATTOM data section
+      let attomHtml = "";
+      if (attomData && !attomData.error) {
+        const property = attomData.property?.[0];
+        if (property) {
+          const summary = property.summary || {};
+          const building = property.building || {};
+          const lot = property.lot || {};
+
+          attomHtml = `
+            <div class="mt-2 p-2" style="background: #e3f2fd; border-radius: 8px;">
+              <strong><i class="fas fa-building text-primary"></i> ATTOM Property Data:</strong>
+              <div class="mt-2 small">
+                ${
+                  summary.propclass
+                    ? `<div><strong>Property Class:</strong> ${summary.propclass}</div>`
+                    : ""
+                }
+                ${
+                  summary.proptype
+                    ? `<div><strong>Property Type:</strong> ${summary.proptype}</div>`
+                    : ""
+                }
+                ${
+                  summary.yearbuilt
+                    ? `<div><strong>Year Built:</strong> ${summary.yearbuilt}</div>`
+                    : ""
+                }
+                ${
+                  building.size?.bldgsize
+                    ? `<div><strong>Building Size:</strong> ${building.size.bldgsize.toLocaleString()} sq ft</div>`
+                    : ""
+                }
+                ${
+                  building.rooms?.bathstotal
+                    ? `<div><strong>Bathrooms:</strong> ${building.rooms.bathstotal}</div>`
+                    : ""
+                }
+                ${
+                  building.rooms?.beds
+                    ? `<div><strong>Bedrooms:</strong> ${building.rooms.beds}</div>`
+                    : ""
+                }
+                ${
+                  lot.lotsize1
+                    ? `<div><strong>Lot Size:</strong> ${lot.lotsize1.toLocaleString()} sq ft</div>`
+                    : ""
+                }
+              </div>
+              <details class="mt-2">
+                <summary style="cursor: pointer; color: #1976d2; font-size: 0.85rem;">
+                  <i class="fas fa-database"></i> Full ATTOM Response
+                </summary>
+                <div class="webhook-event-body">${JSON.stringify(
+                  attomData,
+                  null,
+                  2
+                )}</div>
+              </details>
+            </div>`;
+        }
+      } else if (attomData?.error) {
+        attomHtml = `
+          <div class="mt-2 p-2" style="background: #ffebee; border-radius: 8px;">
+            <i class="fas fa-times-circle text-danger"></i>
+            <strong>ATTOM Error:</strong>
+            <div class="small mt-1">${JSON.stringify(attomData.error)}</div>
+          </div>`;
+      }
+
       return `
         <div class="webhook-event">
           <div class="d-flex justify-content-between align-items-start">
@@ -109,6 +181,7 @@ function renderEvents(events) {
             <span class="webhook-event-time">${time}</span>
           </div>
           ${addressHtml}
+          ${attomHtml}
           <details class="mt-2">
             <summary style="cursor: pointer; color: #666;">
               <i class="fas fa-code"></i> Raw webhook payload
