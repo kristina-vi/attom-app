@@ -1,326 +1,167 @@
 const express = require("express");
 const axios = require("axios");
 const session = require("express-session");
-const cors = require("cors");
 const path = require("path");
 const config = require("./config");
 
 const app = express();
 
-// Store webhook events in memory (for demo purposes)
+// Store webhook events in memory
 const webhookEvents = [];
-const MAX_EVENTS = 50; // Keep last 50 events
+const MAX_EVENTS = 50;
 
-// Store access token for webhook use (in production, use a proper store)
+// Store access token for webhook use
 let storedAccessToken = null;
 
-// Track if app has been disconnected via webhook
-let appDisconnected = false;
-
-// Helper function to disconnect app from Jobber (forceful disconnect)
+// Helper: Disconnect app from Jobber
 async function disconnectFromJobber(accessToken) {
-  if (!accessToken) {
-    console.log("No access token available to disconnect");
-    return false;
-  }
-
-  const mutation = `
-    mutation appDisconnect {
-      appDisconnect {
-        app {
-          id
-          displayName
-        }
-        userErrors {
-          message
-          path
-        }
-      }
-    }
-  `;
+  if (!accessToken) return false;
 
   try {
     const response = await axios.post(
       config.JOBBER_GRAPHQL_URL,
-      { query: mutation },
+      {
+        query: `mutation { appDisconnect { app { id } userErrors { message } } }`,
+      },
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
-          Accept: "application/json",
           "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
         },
       }
     );
-
-    if (response.data.errors) {
-      console.error("GraphQL errors disconnecting app:", response.data.errors);
-      return false;
-    }
-
-    const result = response.data.data.appDisconnect;
-    if (result.userErrors && result.userErrors.length > 0) {
-      console.error("User errors disconnecting app:", result.userErrors);
-      return false;
-    }
-
-    console.log("Successfully disconnected from Jobber:", result.app);
+    console.log("Disconnected from Jobber:", response.data);
     return true;
   } catch (error) {
-    console.error("Error disconnecting from Jobber:", error.message);
+    console.error("Error disconnecting:", error.message);
     return false;
   }
 }
 
-// Helper function to fetch property details from Jobber
+// Helper: Fetch property details
 async function fetchPropertyDetails(propertyId) {
-  if (!storedAccessToken) {
-    console.log("No access token available to fetch property details");
-    return null;
-  }
-
-  const query = `
-    query property($id: EncodedId!) {
-      property(id: $id) {
-        address {
-          street1
-          street2
-          city
-          province
-          country
-          postalCode
-        }
-      }
-    }
-  `;
+  if (!storedAccessToken) return null;
 
   try {
     const response = await axios.post(
       config.JOBBER_GRAPHQL_URL,
       {
-        query: query,
+        query: `query($id: EncodedId!) { property(id: $id) { address { street1 street2 city province country postalCode } } }`,
         variables: { id: propertyId },
       },
       {
         headers: {
           Authorization: `Bearer ${storedAccessToken}`,
           "Content-Type": "application/json",
-          Accept: "application/json",
           "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
         },
       }
     );
-
-    if (response.data.errors) {
-      console.error("GraphQL errors fetching property:", response.data.errors);
-      return null;
-    }
-
-    return response.data.data.property;
+    return response.data.data?.property;
   } catch (error) {
-    console.error("Error fetching property details:", error.message);
+    console.error("Error fetching property:", error.message);
     return null;
   }
 }
 
 // Middleware
-app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use(express.static("public"));
 app.use(
   session({
     secret: config.SESSION_SECRET,
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: false }, // Set to true in production with HTTPS
   })
 );
 
-// Routes
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
-
-// Initiate OAuth flow
+// OAuth: Login
 app.get("/auth/login", (req, res) => {
-  const authUrl =
-    `${config.JOBBER_AUTH_URL}?` +
-    `client_id=${encodeURIComponent(config.JOBBER_CLIENT_ID)}&` +
-    `redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&` +
-    `response_type=code&`;
+  const authUrl = `${config.JOBBER_AUTH_URL}?client_id=${
+    config.JOBBER_CLIENT_ID
+  }&redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&response_type=code`;
   res.redirect(authUrl);
 });
 
-// OAuth callback
+// OAuth: Callback
 app.get("/auth/callback", async (req, res) => {
   const { code, error } = req.query;
-
-  if (error) {
-    return res.redirect("/?error=" + encodeURIComponent(error));
-  }
-
-  if (!code) {
-    return res.redirect("/?error=invalid_request");
-  }
+  if (error || !code)
+    return res.redirect("/?error=" + (error || "invalid_request"));
 
   try {
-    // Exchange authorization code for access token
-    const tokenResponse = await axios.post(
-      config.JOBBER_TOKEN_URL,
-      {
-        grant_type: "authorization_code",
-        client_id: config.JOBBER_CLIENT_ID,
-        client_secret: config.JOBBER_CLIENT_SECRET,
-        code: code,
-        redirect_uri: config.REDIRECT_URI,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-      }
-    );
+    const response = await axios.post(config.JOBBER_TOKEN_URL, {
+      grant_type: "authorization_code",
+      client_id: config.JOBBER_CLIENT_ID,
+      client_secret: config.JOBBER_CLIENT_SECRET,
+      code,
+      redirect_uri: config.REDIRECT_URI,
+    });
 
-    const { access_token, refresh_token } = tokenResponse.data;
-
-    // Store tokens in session
-    req.session.accessToken = access_token;
-    req.session.refreshToken = refresh_token;
-
-    // Also store token for webhook use
-    storedAccessToken = access_token;
-    console.log("Access token stored for webhook property lookups");
-
-    res.redirect("/?authenticated=true");
-  } catch (error) {
-    console.error(
-      "Token exchange error:",
-      error.response?.data || error.message
-    );
+    req.session.accessToken = response.data.access_token;
+    storedAccessToken = response.data.access_token;
+    console.log("Access token stored");
+    res.redirect("/");
+  } catch (err) {
+    console.error("Token exchange failed:", err.message);
     res.redirect("/?error=token_exchange_failed");
   }
 });
 
-// Check authentication status
+// Auth status
 app.get("/api/auth/status", (req, res) => {
-  res.json({
-    authenticated: !!req.session.accessToken,
-    hasToken: !!req.session.accessToken,
-  });
+  res.json({ authenticated: !!req.session.accessToken });
 });
 
-// Logout and disconnect from Jobber
+// Logout
 app.post("/api/auth/logout", async (req, res) => {
-  const accessToken = req.session.accessToken;
-
-  // Send appDisconnect mutation to Jobber
-  if (accessToken) {
-    await disconnectFromJobber(accessToken);
+  if (req.session.accessToken) {
+    await disconnectFromJobber(req.session.accessToken);
   }
-
-  // Clear stored token
   storedAccessToken = null;
-
-  // Destroy session
   req.session.destroy();
   res.json({ success: true });
 });
 
-// Webhook endpoint for APP_DISCONNECT events
+// Webhook: APP_DISCONNECT
 app.post("/webhooks/app-disconnect", (req, res) => {
-  // Acknowledge receipt immediately
-  res.status(200).json({ received: true });
-
-  const webhookData = req.body.data?.webHookEvent;
-  const accountId = webhookData?.accountId;
-
-  console.log("APP_DISCONNECT webhook received");
-  console.log("Account ID:", accountId);
-  console.log("Full payload:", JSON.stringify(req.body, null, 2));
-
-  // Mark app as disconnected and clear stored token
-  appDisconnected = true;
+  res.json({ received: true });
+  console.log(
+    "APP_DISCONNECT received:",
+    req.body.data?.webHookEvent?.accountId
+  );
   storedAccessToken = null;
-
-  // Add to events array for visibility in the UI
-  const event = {
-    id: Date.now(),
-    receivedAt: new Date().toISOString(),
-    type: "APP_DISCONNECT",
-    headers: {
-      "content-type": req.headers["content-type"],
-      "x-jobber-topic": req.headers["x-jobber-topic"],
-      "x-jobber-hmac-sha256": req.headers["x-jobber-hmac-sha256"],
-    },
-    webhookPayload: req.body,
-    accountId: accountId,
-  };
-
-  webhookEvents.unshift(event);
-
-  if (webhookEvents.length > MAX_EVENTS) {
-    webhookEvents.pop();
-  }
+  addWebhookEvent(req, null);
 });
 
-// Check if app has been disconnected via webhook
-app.get("/api/app/disconnect-status", (req, res) => {
-  res.json({ disconnected: appDisconnected });
-});
-
-// Reset disconnect status (called after user acknowledges)
-app.post("/api/app/acknowledge-disconnect", (req, res) => {
-  appDisconnected = false;
-  res.json({ success: true });
-});
-
-// Webhook endpoint for PROPERTY_CREATE events
+// Webhook: PROPERTY_CREATE
 app.post("/webhooks/property", async (req, res) => {
-  // Acknowledge receipt immediately (Jobber expects quick response)
-  res.status(200).json({ received: true });
-
-  // Extract itemId from nested webhook payload structure
+  res.json({ received: true });
   const propertyId = req.body.data?.webHookEvent?.itemId;
-  console.log("Webhook received for property:", propertyId);
+  const propertyDetails = propertyId
+    ? await fetchPropertyDetails(propertyId)
+    : null;
+  addWebhookEvent(req, propertyDetails);
+});
 
-  // Fetch property details from Jobber API
-  let propertyDetails = null;
-  if (propertyId) {
-    propertyDetails = await fetchPropertyDetails(propertyId);
-    console.log("Property details fetched:", propertyDetails);
-  }
-
-  const event = {
+function addWebhookEvent(req, propertyDetails) {
+  webhookEvents.unshift({
     id: Date.now(),
     receivedAt: new Date().toISOString(),
     headers: {
-      "content-type": req.headers["content-type"],
       "x-jobber-topic": req.headers["x-jobber-topic"],
-      "x-jobber-hmac-sha256": req.headers["x-jobber-hmac-sha256"],
     },
     webhookPayload: req.body,
-    propertyDetails: propertyDetails,
-  };
+    propertyDetails,
+  });
+  if (webhookEvents.length > MAX_EVENTS) webhookEvents.pop();
+}
 
-  console.log("Full event:", JSON.stringify(event, null, 2));
-
-  // Add to events array (most recent first)
-  webhookEvents.unshift(event);
-
-  // Keep only the last MAX_EVENTS
-  if (webhookEvents.length > MAX_EVENTS) {
-    webhookEvents.pop();
-  }
-});
-
-// Get webhook events for the frontend
-app.get("/api/webhooks/events", (req, res) => {
-  res.json({ events: webhookEvents });
-});
-
-// Clear webhook events
+// Get/clear webhook events
+app.get("/api/webhooks/events", (req, res) =>
+  res.json({ events: webhookEvents })
+);
 app.delete("/api/webhooks/events", (req, res) => {
   webhookEvents.length = 0;
   res.json({ success: true });
@@ -328,8 +169,5 @@ app.delete("/api/webhooks/events", (req, res) => {
 
 // Start server
 app.listen(config.PORT, () => {
-  console.log(`Server running on http://localhost:${config.PORT}`);
-  console.log(
-    `Click here to start OAuth flow: http://localhost:${config.PORT}/auth/login`
-  );
+  console.log(`Server: http://localhost:${config.PORT}`);
 });
