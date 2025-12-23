@@ -269,8 +269,8 @@ const webhookEventsContainer = document.getElementById("webhook-events");
 const eventCountSpan = document.getElementById("event-count");
 const clearEventsBtn = document.getElementById("clear-events-btn");
 
-let lastEventCount = 0;
 let knownEventIds = new Set();
+let lastRenderedIds = [];
 
 // Poll for webhook events
 async function fetchWebhookEvents() {
@@ -279,11 +279,26 @@ async function fetchWebhookEvents() {
     const data = await response.json();
 
     if (data.events && data.events.length > 0) {
-      renderWebhookEvents(data.events);
+      // Check if we have new events by comparing IDs
+      const currentIds = data.events.map((e) => e.id);
+      const hasNewEvents =
+        currentIds.length !== lastRenderedIds.length ||
+        currentIds.some((id, i) => id !== lastRenderedIds[i]);
+
+      if (hasNewEvents) {
+        renderWebhookEvents(data.events);
+        lastRenderedIds = currentIds;
+      }
+
       eventCountSpan.textContent = `${data.events.length} event${
         data.events.length !== 1 ? "s" : ""
       }`;
     } else {
+      if (lastRenderedIds.length > 0) {
+        // Events were cleared, re-render empty state
+        renderWebhookEvents([]);
+        lastRenderedIds = [];
+      }
       eventCountSpan.textContent = "No events yet";
     }
   } catch (error) {
@@ -304,10 +319,16 @@ function renderWebhookEvents(events) {
     return;
   }
 
+  const newEventIds = events
+    .filter((e) => !knownEventIds.has(e.id))
+    .map((e) => e.id);
+
+  // Mark all current events as known
+  events.forEach((e) => knownEventIds.add(e.id));
+
   webhookEventsContainer.innerHTML = events
     .map((event) => {
-      const isNew = !knownEventIds.has(event.id);
-      if (isNew) knownEventIds.add(event.id);
+      const isNew = newEventIds.includes(event.id);
 
       const time = new Date(event.receivedAt).toLocaleString();
       const topic = event.headers["x-jobber-topic"] || "Unknown";

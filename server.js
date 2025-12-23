@@ -260,7 +260,8 @@ app.post("/webhooks/property", async (req, res) => {
   // Acknowledge receipt immediately (Jobber expects quick response)
   res.status(200).json({ received: true });
 
-  const propertyId = req.body.itemId;
+  // Extract itemId from nested webhook payload structure
+  const propertyId = req.body.data?.webHookEvent?.itemId;
   console.log("Webhook received for property:", propertyId);
 
   // Fetch property details from Jobber API
