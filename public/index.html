@@ -48,28 +48,11 @@
         transform: translateY(-2px);
         box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
       }
-      .btn-success {
-        background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
-        border: none;
-        border-radius: 10px;
-        padding: 12px 30px;
-        font-weight: 600;
-      }
       .btn-danger {
         background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
         border: none;
         border-radius: 10px;
         padding: 8px 20px;
-      }
-      .form-control {
-        border-radius: 10px;
-        border: 2px solid #e9ecef;
-        padding: 12px 15px;
-        transition: all 0.3s ease;
-      }
-      .form-control:focus {
-        border-color: #667eea;
-        box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
       }
       .alert {
         border-radius: 10px;
@@ -77,20 +60,7 @@
       }
       .auth-section {
         text-align: center;
-        margin-bottom: 2rem;
-      }
-      .vehicle-form {
-        display: none;
-      }
-      .loading {
-        display: none;
-        text-align: center;
-      }
-      .spinner-border {
-        color: #667eea;
-      }
-      .success-message {
-        display: none;
+        margin-bottom: 1rem;
       }
       .webhook-events-container {
         max-height: 400px;
@@ -153,6 +123,34 @@
           </p>
         </div>
         <div class="card-body p-4">
+          <!-- Disconnect Alert -->
+          <div id="disconnect-alert" style="display: none" class="mb-3">
+            <div
+              class="alert alert-warning"
+              style="
+                background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                color: white;
+                border: none;
+              "
+            >
+              <div class="d-flex align-items-center justify-content-between">
+                <div>
+                  <i class="fas fa-unlink"></i>
+                  <strong>App Disconnected!</strong>
+                  <p class="mb-0 small">
+                    This app has been disconnected from the Jobber account.
+                  </p>
+                </div>
+                <button
+                  id="acknowledge-disconnect-btn"
+                  class="btn btn-sm btn-light"
+                >
+                  <i class="fas fa-check"></i> OK
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- Authentication Section -->
           <div id="auth-section" class="auth-section">
             <div id="login-section">
@@ -173,86 +171,6 @@
               <button id="logout-btn" class="btn btn-danger">
                 <i class="fas fa-sign-out-alt"></i> Logout
               </button>
-            </div>
-          </div>
-
-          <!-- Vehicle Creation Form -->
-          <div id="vehicle-form" class="vehicle-form">
-            <hr class="my-4" />
-            <h4 class="mb-3">Create New Vehicle</h4>
-
-            <form id="create-vehicle-form">
-              <div class="mb-3">
-                <label for="name" class="form-label">Vehicle Name *</label>
-                <input
-                  type="text"
-                  class="form-control"
-                  id="name"
-                  name="name"
-                  placeholder="e.g., Company Truck #1, Service Van, Delivery Vehicle"
-                  required
-                />
-              </div>
-
-              <div class="row">
-                <div class="col-md-6 mb-3">
-                  <label for="make" class="form-label">Make *</label>
-                  <input
-                    type="text"
-                    class="form-control"
-                    id="make"
-                    name="make"
-                    placeholder="e.g., Toyota, Ford, Honda"
-                    required
-                  />
-                </div>
-                <div class="col-md-6 mb-3">
-                  <label for="model" class="form-label">Model *</label>
-                  <input
-                    type="text"
-                    class="form-control"
-                    id="model"
-                    name="model"
-                    placeholder="e.g., Camry, F-150, Civic"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div class="mb-3">
-                <label for="year" class="form-label">Year *</label>
-                <input
-                  type="number"
-                  class="form-control"
-                  id="year"
-                  name="year"
-                  min="1900"
-                  max="2030"
-                  placeholder="e.g., 2023"
-                  required
-                />
-              </div>
-
-              <div class="d-grid">
-                <button type="submit" class="btn btn-success btn-lg">
-                  <i class="fas fa-plus-circle"></i> Create Vehicle
-                </button>
-              </div>
-            </form>
-
-            <div id="loading" class="loading mt-3">
-              <div class="spinner-border" role="status">
-                <span class="visually-hidden">Loading...</span>
-              </div>
-              <p class="mt-2">Creating vehicle...</p>
-            </div>
-
-            <div id="success-message" class="success-message mt-3">
-              <div class="alert alert-success">
-                <i class="fas fa-check-circle"></i> Vehicle created
-                successfully!
-                <div id="vehicle-details" class="mt-2"></div>
-              </div>
             </div>
           </div>
 

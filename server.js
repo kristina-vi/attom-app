@@ -14,6 +14,64 @@ const MAX_EVENTS = 50; // Keep last 50 events
 // Store access token for webhook use (in production, use a proper store)
 let storedAccessToken = null;
 
+// Track if app has been disconnected via webhook
+let appDisconnected = false;
+
+// Helper function to disconnect app from Jobber (forceful disconnect)
+async function disconnectFromJobber(accessToken) {
+  if (!accessToken) {
+    console.log("No access token available to disconnect");
+    return false;
+  }
+
+  const mutation = `
+    mutation appDisconnect {
+      appDisconnect {
+        app {
+          id
+          displayName
+        }
+        userErrors {
+          message
+          path
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await axios.post(
+      config.JOBBER_GRAPHQL_URL,
+      { query: mutation },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
+        },
+      }
+    );
+
+    if (response.data.errors) {
+      console.error("GraphQL errors disconnecting app:", response.data.errors);
+      return false;
+    }
+
+    const result = response.data.data.appDisconnect;
+    if (result.userErrors && result.userErrors.length > 0) {
+      console.error("User errors disconnecting app:", result.userErrors);
+      return false;
+    }
+
+    console.log("Successfully disconnected from Jobber:", result.app);
+    return true;
+  } catch (error) {
+    console.error("Error disconnecting from Jobber:", error.message);
+    return false;
+  }
+}
+
 // Helper function to fetch property details from Jobber
 async function fetchPropertyDetails(propertyId) {
   if (!storedAccessToken) {
@@ -153,106 +211,69 @@ app.get("/api/auth/status", (req, res) => {
   });
 });
 
-// Logout
-app.post("/api/auth/logout", (req, res) => {
+// Logout and disconnect from Jobber
+app.post("/api/auth/logout", async (req, res) => {
+  const accessToken = req.session.accessToken;
+
+  // Send appDisconnect mutation to Jobber
+  if (accessToken) {
+    await disconnectFromJobber(accessToken);
+  }
+
+  // Clear stored token
+  storedAccessToken = null;
+
+  // Destroy session
   req.session.destroy();
   res.json({ success: true });
 });
 
-// Create vehicle endpoint
-app.post("/api/vehicles", async (req, res) => {
-  if (!req.session.accessToken) {
-    return res.status(401).json({ error: "Not authenticated" });
-  }
+// Webhook endpoint for APP_DISCONNECT events
+app.post("/webhooks/app-disconnect", (req, res) => {
+  // Acknowledge receipt immediately
+  res.status(200).json({ received: true });
 
-  const { name, make, model, year } = req.body;
+  const webhookData = req.body.data?.webHookEvent;
+  const accountId = webhookData?.accountId;
 
-  if (!name || !make || !model || !year) {
-    return res
-      .status(400)
-      .json({ error: "Name, make, model, and year are required" });
-  }
+  console.log("APP_DISCONNECT webhook received");
+  console.log("Account ID:", accountId);
+  console.log("Full payload:", JSON.stringify(req.body, null, 2));
 
-  const mutation = `
-    mutation CreateVehicle($input: VehicleCreateInput!) {
-      vehicleCreate(input: $input) {
-        vehicle {
-          id
-          name
-          make
-          model
-          year
-        }
-        userErrors {
-          message
-          path
-        }
-      }
-    }
-  `;
+  // Mark app as disconnected and clear stored token
+  appDisconnected = true;
+  storedAccessToken = null;
 
-  const variables = {
-    input: {
-      name: name,
-      make: make,
-      model: model,
-      year: parseInt(year),
+  // Add to events array for visibility in the UI
+  const event = {
+    id: Date.now(),
+    receivedAt: new Date().toISOString(),
+    type: "APP_DISCONNECT",
+    headers: {
+      "content-type": req.headers["content-type"],
+      "x-jobber-topic": req.headers["x-jobber-topic"],
+      "x-jobber-hmac-sha256": req.headers["x-jobber-hmac-sha256"],
     },
+    webhookPayload: req.body,
+    accountId: accountId,
   };
 
-  try {
-    // Make GraphQL request to create vehicle
-    const response = await axios.post(
-      config.JOBBER_GRAPHQL_URL,
-      {
-        query: mutation,
-        variables: variables,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${req.session.accessToken}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
-        },
-      }
-    );
+  webhookEvents.unshift(event);
 
-    // Check for GraphQL errors
-    if (response.data.errors) {
-      return res.status(400).json({
-        error: "GraphQL errors",
-        details: response.data.errors,
-      });
-    }
-
-    const vehicleResult = response.data.data.vehicleCreate;
-
-    // Check for user validation errors
-    if (vehicleResult.userErrors && vehicleResult.userErrors.length > 0) {
-      return res.status(400).json({
-        error: "Validation errors",
-        details: vehicleResult.userErrors,
-      });
-    }
-
-    // Success - return the created vehicle
-    res.json({ success: true, vehicle: vehicleResult.vehicle });
-  } catch (error) {
-    // Handle authentication errors
-    if (error.response?.status === 401 || error.response?.status === 403) {
-      req.session.destroy();
-      return res.status(401).json({
-        error: "Authentication expired",
-        needsReauth: true,
-      });
-    }
-
-    res.status(500).json({
-      error: "Failed to create vehicle",
-      details: error.response?.data || error.message,
-    });
+  if (webhookEvents.length > MAX_EVENTS) {
+    webhookEvents.pop();
   }
+});
+
+// Check if app has been disconnected via webhook
+app.get("/api/app/disconnect-status", (req, res) => {
+  res.json({ disconnected: appDisconnected });
+});
+
+// Reset disconnect status (called after user acknowledges)
+app.post("/api/app/acknowledge-disconnect", (req, res) => {
+  appDisconnected = false;
+  res.json({ success: true });
 });
 
 // Webhook endpoint for PROPERTY_CREATE events
