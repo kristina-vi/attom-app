@@ -20,8 +20,8 @@ A Node.js application that integrates with Jobber's API using OAuth 2.0 and Grap
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/kristina-vi/gps-app-template.git
-   cd gps-app-template
+   git clone https://github.com/kristina-vi/attom-integration-app.git
+   cd attom-integration-app
    ```
 
 2. **Install dependencies:**
