@@ -14,6 +14,9 @@ yarn-error.log*
 # Config files with sensitive data (you may want to create a config.example.js instead)
 config.js
 
+# Custom field IDs (account-specific)
+custom-fields.json
+
 # Logs
 logs
 *.log

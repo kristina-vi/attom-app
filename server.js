@@ -2,7 +2,11 @@ const express = require("express");
 const axios = require("axios");
 const session = require("express-session");
 const path = require("path");
+const fs = require("fs");
 const config = require("./config");
+
+// Path to store custom field IDs
+const CUSTOM_FIELDS_FILE = path.join(__dirname, "custom-fields.json");
 
 const app = express();
 
@@ -18,6 +22,272 @@ let disconnectedViaWebhook = false;
 const ATTOM_API_KEY = "f0e8cff35b5080b3ede1b209dadb875f";
 const ATTOM_API_URL =
   "https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/basicprofile";
+
+// Custom field definitions
+const CUSTOM_FIELD_DEFINITIONS = [
+  { name: "Property Type", key: "propertyType" },
+  { name: "Building Size", key: "buildingSize" },
+  { name: "Lot Size", key: "lotSize" },
+  { name: "Floors", key: "floors" },
+  { name: "Bedrooms", key: "bedrooms" },
+  { name: "Bathrooms", key: "bathrooms" },
+];
+
+// Helper: Load custom field IDs from file
+function loadCustomFieldIds() {
+  try {
+    if (fs.existsSync(CUSTOM_FIELDS_FILE)) {
+      const data = fs.readFileSync(CUSTOM_FIELDS_FILE, "utf8");
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error("Error loading custom field IDs:", error.message);
+  }
+  return {};
+}
+
+// Helper: Save custom field IDs to file
+function saveCustomFieldIds(ids) {
+  try {
+    fs.writeFileSync(CUSTOM_FIELDS_FILE, JSON.stringify(ids, null, 2));
+    console.log("Custom field IDs saved to", CUSTOM_FIELDS_FILE);
+  } catch (error) {
+    console.error("Error saving custom field IDs:", error.message);
+  }
+}
+
+// Helper: Create a single custom field in Jobber
+async function createCustomField(accessToken, fieldName) {
+  try {
+    const response = await axios.post(
+      config.JOBBER_GRAPHQL_URL,
+      {
+        query: `
+          mutation CustomFieldConfigurationCreate($name: String!) {
+            customFieldConfigurationCreateText(
+              input: {
+                name: $name
+                appliesTo: ALL_PROPERTIES
+                transferable: false
+                readOnly: true
+              }
+            ) {
+              customFieldConfiguration {
+                id
+                name
+              }
+              userErrors {
+                message
+                path
+              }
+            }
+          }
+        `,
+        variables: { name: fieldName },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
+        },
+      }
+    );
+
+    const result = response.data.data?.customFieldConfigurationCreateText;
+    if (result?.userErrors?.length > 0) {
+      console.log(`Custom field "${fieldName}" error:`, result.userErrors);
+      return null;
+    }
+    return result?.customFieldConfiguration;
+  } catch (error) {
+    console.error(`Error creating custom field "${fieldName}":`, error.message);
+    return null;
+  }
+}
+
+// Helper: Create all custom fields after OAuth
+async function createAllCustomFields(accessToken) {
+  const existingIds = loadCustomFieldIds();
+  const allFieldsExist = CUSTOM_FIELD_DEFINITIONS.every(
+    (def) => existingIds[def.key]
+  );
+
+  if (allFieldsExist) {
+    console.log("All custom fields already exist");
+    return existingIds;
+  }
+
+  console.log("Creating custom fields in Jobber...");
+  const newIds = { ...existingIds };
+
+  for (const def of CUSTOM_FIELD_DEFINITIONS) {
+    if (!newIds[def.key]) {
+      const created = await createCustomField(accessToken, def.name);
+      if (created) {
+        newIds[def.key] = created.id;
+        console.log(`Created custom field: ${def.name} -> ${created.id}`);
+      }
+    }
+  }
+
+  saveCustomFieldIds(newIds);
+  return newIds;
+}
+
+// Helper: Update property with ATTOM data
+async function updatePropertyCustomFields(propertyId, attomData, accessToken) {
+  if (!accessToken || !attomData || attomData.error) return null;
+
+  const customFieldIds = loadCustomFieldIds();
+  if (Object.keys(customFieldIds).length === 0) {
+    console.log("No custom field IDs found, skipping property update");
+    return null;
+  }
+
+  const property = attomData.property?.[0];
+  if (!property) return null;
+
+  const summary = property.summary || {};
+  const building = property.building || {};
+  const lot = property.lot || {};
+  const rooms = building.rooms || {};
+
+  // Build custom fields array with values from ATTOM
+  const customFields = [];
+
+  if (customFieldIds.propertyType) {
+    const propType =
+      summary.propertyType || summary.propType || summary.propSubType || "";
+    if (propType) {
+      customFields.push({
+        customFieldConfigurationId: customFieldIds.propertyType,
+        valueText: String(propType),
+      });
+    }
+  }
+
+  if (customFieldIds.buildingSize) {
+    const bldgSize = building.size?.bldgSize;
+    if (bldgSize) {
+      customFields.push({
+        customFieldConfigurationId: customFieldIds.buildingSize,
+        valueText: `${bldgSize} sq ft`,
+      });
+    }
+  }
+
+  if (customFieldIds.lotSize) {
+    const lotSize = lot.lotSize2;
+    if (lotSize) {
+      customFields.push({
+        customFieldConfigurationId: customFieldIds.lotSize,
+        valueText: `${lotSize} sq ft`,
+      });
+    }
+  }
+
+  if (customFieldIds.floors) {
+    const levels = building.summary?.levels;
+    if (levels) {
+      customFields.push({
+        customFieldConfigurationId: customFieldIds.floors,
+        valueText: String(levels),
+      });
+    }
+  }
+
+  if (customFieldIds.bedrooms) {
+    const beds = rooms.beds;
+    if (beds !== undefined && beds !== null) {
+      customFields.push({
+        customFieldConfigurationId: customFieldIds.bedrooms,
+        valueText: String(beds),
+      });
+    }
+  }
+
+  if (customFieldIds.bathrooms) {
+    const baths = (rooms.bathsTotal || 0) + (rooms.bathsPartial || 0);
+    if (baths > 0) {
+      customFields.push({
+        customFieldConfigurationId: customFieldIds.bathrooms,
+        valueText: String(baths),
+      });
+    }
+  }
+
+  if (customFields.length === 0) {
+    console.log("No custom field values to update");
+    return null;
+  }
+
+  // Build custom fields array as inline GraphQL
+  const customFieldsGql = customFields
+    .map(
+      (cf) =>
+        `{ customFieldConfigurationId: "${
+          cf.customFieldConfigurationId
+        }", valueText: "${cf.valueText.replace(/"/g, '\\"')}" }`
+    )
+    .join(", ");
+
+  try {
+    const response = await axios.post(
+      config.JOBBER_GRAPHQL_URL,
+      {
+        query: `
+          mutation UpdatePropertyCustomFields {
+            propertyEdit(
+              propertyId: "${propertyId}"
+              input: { customFields: [${customFieldsGql}] }
+            ) {
+              property {
+                id
+                customFields {
+                  ... on CustomFieldText {
+                    id
+                    label
+                    valueText
+                  }
+                }
+              }
+              userErrors {
+                message
+                path
+              }
+            }
+          }
+        `,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
+        },
+      }
+    );
+
+    console.log(
+      "Property update response:",
+      JSON.stringify(response.data, null, 2)
+    );
+    const result = response.data.data?.propertyEdit;
+    if (result?.userErrors?.length > 0) {
+      console.error("Property update errors:", result.userErrors);
+    } else {
+      console.log("Property custom fields updated successfully");
+    }
+    return result;
+  } catch (error) {
+    console.error(
+      "Error updating property:",
+      error.response?.data || error.message
+    );
+    return null;
+  }
+}
 
 // Helper: Disconnect app from Jobber
 async function disconnectFromJobber(accessToken) {
@@ -146,6 +416,10 @@ app.get("/auth/callback", async (req, res) => {
     storedAccessToken = response.data.access_token;
     disconnectedViaWebhook = false;
     console.log("Access token stored");
+
+    // Create custom fields after connection (async, don't block redirect)
+    createAllCustomFields(storedAccessToken).catch(console.error);
+
     res.redirect("/");
   } catch (err) {
     console.error("Token exchange failed:", err.message);
@@ -194,6 +468,11 @@ app.post("/webhooks/property", async (req, res) => {
   let attomData = null;
   if (propertyDetails?.address) {
     attomData = await fetchAttomPropertyData(propertyDetails.address);
+  }
+
+  // Update property with ATTOM data via custom fields
+  if (attomData && !attomData.error && propertyId && storedAccessToken) {
+    await updatePropertyCustomFields(propertyId, attomData, storedAccessToken);
   }
 
   addWebhookEvent(req, propertyDetails, attomData);

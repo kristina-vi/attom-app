@@ -112,49 +112,66 @@ function renderEvents(events) {
           const summary = property.summary || {};
           const building = property.building || {};
           const lot = property.lot || {};
+          const utilities = property.utilities || {};
+          const rooms = building.rooms || {};
+          const size = building.size || {};
+          const bldgSummary = building.summary || {};
+
+          // Build rows only for available data
+          const rows = [];
+
+          // Property basics
+          if (summary.propertyType)
+            rows.push(["Property Type", summary.propertyType]);
+          if (summary.yearBuilt) rows.push(["Year Built", summary.yearBuilt]);
+          if (lot.zoningType) rows.push(["Zoning", lot.zoningType]);
+
+          // Size information
+          if (size.bldgSize)
+            rows.push([
+              "Building Size",
+              `${size.bldgSize.toLocaleString()} sq ft`,
+            ]);
+          if (lot.lotSize2)
+            rows.push(["Lot Size", `${lot.lotSize2.toLocaleString()} sq ft`]);
+          if (bldgSummary.levels) rows.push(["Floors", bldgSummary.levels]);
+
+          // Rooms
+          if (rooms.beds) rows.push(["Bedrooms", rooms.beds]);
+          if (rooms.bathsTotal)
+            rows.push([
+              "Bathrooms",
+              `${rooms.bathsTotal}${
+                rooms.bathsPartial ? ` (${rooms.bathsPartial} half)` : ""
+              }`,
+            ]);
+          if (rooms.roomsTotal) rows.push(["Total Rooms", rooms.roomsTotal]);
+          if (bldgSummary.unitsCount)
+            rows.push(["Units", bldgSummary.unitsCount]);
+
+          // Systems
+          if (utilities.heatingType)
+            rows.push(["Heating", utilities.heatingType]);
+          if (utilities.coolingType)
+            rows.push(["Cooling", utilities.coolingType]);
+          if (building.construction?.constructionType)
+            rows.push(["Construction", building.construction.constructionType]);
+
+          const tableRows = rows
+            .map(
+              ([label, value]) =>
+                `<tr><td style="width:40%;color:#666;">${label}</td><td><strong>${value}</strong></td></tr>`
+            )
+            .join("");
 
           attomHtml = `
             <div class="mt-2 p-2" style="background: #e3f2fd; border-radius: 8px;">
               <strong><i class="fas fa-building text-primary"></i> ATTOM Property Data:</strong>
-              <div class="mt-2 small">
-                ${
-                  summary.propclass
-                    ? `<div><strong>Property Class:</strong> ${summary.propclass}</div>`
-                    : ""
-                }
-                ${
-                  summary.proptype
-                    ? `<div><strong>Property Type:</strong> ${summary.proptype}</div>`
-                    : ""
-                }
-                ${
-                  summary.yearbuilt
-                    ? `<div><strong>Year Built:</strong> ${summary.yearbuilt}</div>`
-                    : ""
-                }
-                ${
-                  building.size?.bldgsize
-                    ? `<div><strong>Building Size:</strong> ${building.size.bldgsize.toLocaleString()} sq ft</div>`
-                    : ""
-                }
-                ${
-                  building.rooms?.bathstotal
-                    ? `<div><strong>Bathrooms:</strong> ${building.rooms.bathstotal}</div>`
-                    : ""
-                }
-                ${
-                  building.rooms?.beds
-                    ? `<div><strong>Bedrooms:</strong> ${building.rooms.beds}</div>`
-                    : ""
-                }
-                ${
-                  lot.lotsize1
-                    ? `<div><strong>Lot Size:</strong> ${lot.lotsize1.toLocaleString()} sq ft</div>`
-                    : ""
-                }
-              </div>
-              <details class="mt-2">
-                <summary style="cursor: pointer; color: #1976d2; font-size: 0.85rem;">
+              <table class="table table-sm table-borderless mt-2 mb-2" style="font-size: 0.85rem;">
+                <tbody>${tableRows}</tbody>
+              </table>
+              <details>
+                <summary style="cursor: pointer; color: #1976d2; font-size: 0.8rem;">
                   <i class="fas fa-database"></i> Full ATTOM Response
                 </summary>
                 <div class="webhook-event-body">${JSON.stringify(
