@@ -5,380 +5,319 @@ const path = require("path");
 const fs = require("fs");
 const config = require("./config");
 
-// Path to store custom field IDs
-const CUSTOM_FIELDS_FILE = path.join(__dirname, "custom-fields.json");
-
 const app = express();
+const ACCOUNTS_FILE = path.join(__dirname, "accounts.json");
 
-// Store webhook events in memory
+// Webhook events (in-memory)
 const webhookEvents = [];
 const MAX_EVENTS = 50;
 
-// Store access token for webhook use
-let storedAccessToken = null;
-let disconnectedViaWebhook = false;
-
-// ATTOM API configuration
+// ATTOM API
 const ATTOM_API_KEY = "f0e8cff35b5080b3ede1b209dadb875f";
 const ATTOM_API_URL =
   "https://api.gateway.attomdata.com/propertyapi/v1.0.0/property/basicprofile";
 
-// Custom field definitions
-const CUSTOM_FIELD_DEFINITIONS = [
-  { name: "Property Type", key: "propertyType" },
-  { name: "Building Size", key: "buildingSize" },
-  { name: "Lot Size", key: "lotSize" },
-  { name: "Floors", key: "floors" },
-  { name: "Bedrooms", key: "bedrooms" },
-  { name: "Bathrooms", key: "bathrooms" },
+// ============ CUSTOM FIELDS CONFIG ============
+
+// All available fields with ATTOM data extractors
+const ALL_FIELDS = {
+  propertyType: {
+    name: "Property Type",
+    getValue: (p) =>
+      p.summary?.propertyType || p.summary?.propType || p.summary?.propSubType,
+  },
+  buildingSize: {
+    name: "Building Size",
+    getValue: (p) =>
+      p.building?.size?.bldgSize ? `${p.building.size.bldgSize} sq ft` : null,
+  },
+  lotSize: {
+    name: "Lot Size",
+    getValue: (p) => (p.lot?.lotSize2 ? `${p.lot.lotSize2} sq ft` : null),
+  },
+  floors: {
+    name: "Floors",
+    getValue: (p) => p.building?.summary?.levels,
+  },
+  bedrooms: {
+    name: "Bedrooms",
+    getValue: (p) => p.building?.rooms?.beds,
+  },
+  bathrooms: {
+    name: "Bathrooms",
+    getValue: (p) => {
+      const total =
+        (p.building?.rooms?.bathsTotal || 0) +
+        (p.building?.rooms?.bathsPartial || 0);
+      return total > 0 ? total : null;
+    },
+  },
+  heatingType: {
+    name: "Heating Type",
+    getValue: (p) => p.utilities?.heatingType,
+  },
+  coolingType: {
+    name: "Cooling Type",
+    getValue: (p) => p.utilities?.coolingType,
+  },
+  yearBuilt: {
+    name: "Year Built",
+    getValue: (p) => p.summary?.yearBuilt,
+  },
+  zoning: {
+    name: "Zoning",
+    getValue: (p) => p.lot?.zoningType,
+  },
+};
+
+// Industry -> field keys
+const INDUSTRY_FIELDS = {
+  RESIDENTIAL_CLEANING: ["buildingSize", "floors", "bathrooms", "propertyType"],
+  LAWN_CARE_LAWN_MAINTENANCE: ["lotSize", "propertyType", "zoning"],
+  HVAC: ["buildingSize", "heatingType", "coolingType", "yearBuilt"],
+};
+
+// Default fields for other industries
+const DEFAULT_FIELDS = [
+  "propertyType",
+  "buildingSize",
+  "lotSize",
+  "floors",
+  "bedrooms",
+  "bathrooms",
 ];
 
-// Helper: Load custom field IDs from file
-function loadCustomFieldIds() {
+function getFieldsForIndustry(industry) {
+  return INDUSTRY_FIELDS[industry] || DEFAULT_FIELDS;
+}
+
+// ============ ACCOUNTS STORAGE ============
+
+function loadAccounts() {
   try {
-    if (fs.existsSync(CUSTOM_FIELDS_FILE)) {
-      const data = fs.readFileSync(CUSTOM_FIELDS_FILE, "utf8");
-      return JSON.parse(data);
+    if (fs.existsSync(ACCOUNTS_FILE)) {
+      return JSON.parse(fs.readFileSync(ACCOUNTS_FILE, "utf8"));
     }
-  } catch (error) {
-    console.error("Error loading custom field IDs:", error.message);
+  } catch (e) {
+    console.error("Error loading accounts:", e.message);
   }
   return {};
 }
 
-// Helper: Save custom field IDs to file
-function saveCustomFieldIds(ids) {
-  try {
-    fs.writeFileSync(CUSTOM_FIELDS_FILE, JSON.stringify(ids, null, 2));
-    console.log("Custom field IDs saved to", CUSTOM_FIELDS_FILE);
-  } catch (error) {
-    console.error("Error saving custom field IDs:", error.message);
-  }
+function saveAccounts(accounts) {
+  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
 }
 
-// Helper: Create a single custom field in Jobber
-async function createCustomField(accessToken, fieldName) {
-  try {
-    const response = await axios.post(
-      config.JOBBER_GRAPHQL_URL,
-      {
-        query: `
-          mutation CustomFieldConfigurationCreate($name: String!) {
-            customFieldConfigurationCreateText(
-              input: {
-                name: $name
-                appliesTo: ALL_PROPERTIES
-                transferable: false
-                readOnly: true
-              }
-            ) {
-              customFieldConfiguration {
-                id
-                name
-              }
-              userErrors {
-                message
-                path
-              }
-            }
-          }
-        `,
-        variables: { name: fieldName },
+function getAccount(accountId) {
+  return loadAccounts()[accountId];
+}
+
+function saveAccount(accountId, data) {
+  const accounts = loadAccounts();
+  accounts[accountId] = { ...accounts[accountId], ...data };
+  saveAccounts(accounts);
+}
+
+// ============ JOBBER API HELPERS ============
+
+async function jobberQuery(accessToken, query, variables = {}) {
+  const response = await axios.post(
+    config.JOBBER_GRAPHQL_URL,
+    { query, variables },
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
       },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
-        },
-      }
-    );
-
-    const result = response.data.data?.customFieldConfigurationCreateText;
-    if (result?.userErrors?.length > 0) {
-      console.log(`Custom field "${fieldName}" error:`, result.userErrors);
-      return null;
     }
-    return result?.customFieldConfiguration;
-  } catch (error) {
-    console.error(`Error creating custom field "${fieldName}":`, error.message);
-    return null;
-  }
-}
-
-// Helper: Create all custom fields after OAuth
-async function createAllCustomFields(accessToken) {
-  const existingIds = loadCustomFieldIds();
-  const allFieldsExist = CUSTOM_FIELD_DEFINITIONS.every(
-    (def) => existingIds[def.key]
   );
-
-  if (allFieldsExist) {
-    console.log("All custom fields already exist");
-    return existingIds;
-  }
-
-  console.log("Creating custom fields in Jobber...");
-  const newIds = { ...existingIds };
-
-  for (const def of CUSTOM_FIELD_DEFINITIONS) {
-    if (!newIds[def.key]) {
-      const created = await createCustomField(accessToken, def.name);
-      if (created) {
-        newIds[def.key] = created.id;
-        console.log(`Created custom field: ${def.name} -> ${created.id}`);
-      }
-    }
-  }
-
-  saveCustomFieldIds(newIds);
-  return newIds;
+  return response.data;
 }
 
-// Helper: Update property with ATTOM data
-async function updatePropertyCustomFields(propertyId, attomData, accessToken) {
-  if (!accessToken || !attomData || attomData.error) return null;
+async function getAccountInfo(accessToken) {
+  const result = await jobberQuery(
+    accessToken,
+    `query { account { id industry } }`
+  );
+  return result.data?.account;
+}
 
-  const customFieldIds = loadCustomFieldIds();
-  if (Object.keys(customFieldIds).length === 0) {
-    console.log("No custom field IDs found, skipping property update");
-    return null;
-  }
+async function createCustomField(accessToken, name) {
+  const result = await jobberQuery(
+    accessToken,
+    `mutation($name: String!) {
+      customFieldConfigurationCreateText(input: { name: $name, appliesTo: ALL_PROPERTIES, transferable: false, readOnly: true }) {
+        customFieldConfiguration { id name }
+        userErrors { message }
+      }
+    }`,
+    { name }
+  );
+  return result.data?.customFieldConfigurationCreateText
+    ?.customFieldConfiguration;
+}
 
-  const property = attomData.property?.[0];
-  if (!property) return null;
+async function fetchPropertyDetails(accessToken, propertyId) {
+  const result = await jobberQuery(
+    accessToken,
+    `query($id: EncodedId!) { property(id: $id) { address { street1 street2 city province country postalCode } } }`,
+    { id: propertyId }
+  );
+  return result.data?.property;
+}
 
-  const summary = property.summary || {};
-  const building = property.building || {};
-  const lot = property.lot || {};
-  const rooms = building.rooms || {};
-
-  // Build custom fields array with values from ATTOM
-  const customFields = [];
-
-  if (customFieldIds.propertyType) {
-    const propType =
-      summary.propertyType || summary.propType || summary.propSubType || "";
-    if (propType) {
-      customFields.push({
-        customFieldConfigurationId: customFieldIds.propertyType,
-        valueText: String(propType),
-      });
-    }
-  }
-
-  if (customFieldIds.buildingSize) {
-    const bldgSize = building.size?.bldgSize;
-    if (bldgSize) {
-      customFields.push({
-        customFieldConfigurationId: customFieldIds.buildingSize,
-        valueText: `${bldgSize} sq ft`,
-      });
-    }
-  }
-
-  if (customFieldIds.lotSize) {
-    const lotSize = lot.lotSize2;
-    if (lotSize) {
-      customFields.push({
-        customFieldConfigurationId: customFieldIds.lotSize,
-        valueText: `${lotSize} sq ft`,
-      });
-    }
-  }
-
-  if (customFieldIds.floors) {
-    const levels = building.summary?.levels;
-    if (levels) {
-      customFields.push({
-        customFieldConfigurationId: customFieldIds.floors,
-        valueText: String(levels),
-      });
-    }
-  }
-
-  if (customFieldIds.bedrooms) {
-    const beds = rooms.beds;
-    if (beds !== undefined && beds !== null) {
-      customFields.push({
-        customFieldConfigurationId: customFieldIds.bedrooms,
-        valueText: String(beds),
-      });
-    }
-  }
-
-  if (customFieldIds.bathrooms) {
-    const baths = (rooms.bathsTotal || 0) + (rooms.bathsPartial || 0);
-    if (baths > 0) {
-      customFields.push({
-        customFieldConfigurationId: customFieldIds.bathrooms,
-        valueText: String(baths),
-      });
-    }
-  }
-
-  if (customFields.length === 0) {
-    console.log("No custom field values to update");
-    return null;
-  }
-
-  // Build custom fields array as inline GraphQL
-  const customFieldsGql = customFields
+async function updatePropertyFields(accessToken, propertyId, customFields) {
+  const fieldsGql = customFields
     .map(
       (cf) =>
-        `{ customFieldConfigurationId: "${
-          cf.customFieldConfigurationId
-        }", valueText: "${cf.valueText.replace(/"/g, '\\"')}" }`
+        `{ customFieldConfigurationId: "${cf.id}", valueText: "${String(
+          cf.value
+        ).replace(/"/g, '\\"')}" }`
     )
     .join(", ");
 
-  try {
-    const response = await axios.post(
-      config.JOBBER_GRAPHQL_URL,
-      {
-        query: `
-          mutation UpdatePropertyCustomFields {
-            propertyEdit(
-              propertyId: "${propertyId}"
-              input: { customFields: [${customFieldsGql}] }
-            ) {
-              property {
-                id
-                customFields {
-                  ... on CustomFieldText {
-                    id
-                    label
-                    valueText
-                  }
-                }
-              }
-              userErrors {
-                message
-                path
-              }
-            }
-          }
-        `,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
-        },
-      }
-    );
+  const result = await jobberQuery(
+    accessToken,
+    `mutation { propertyEdit(propertyId: "${propertyId}", input: { customFields: [${fieldsGql}] }) { property { id } userErrors { message } } }`
+  );
 
-    console.log(
-      "Property update response:",
-      JSON.stringify(response.data, null, 2)
-    );
-    const result = response.data.data?.propertyEdit;
-    if (result?.userErrors?.length > 0) {
-      console.error("Property update errors:", result.userErrors);
-    } else {
-      console.log("Property custom fields updated successfully");
-    }
-    return result;
-  } catch (error) {
+  if (result.data?.propertyEdit?.userErrors?.length > 0) {
     console.error(
-      "Error updating property:",
-      error.response?.data || error.message
+      "Property update errors:",
+      result.data.propertyEdit.userErrors
     );
-    return null;
+  } else {
+    console.log("Property custom fields updated successfully");
   }
+  return result;
 }
 
-// Helper: Disconnect app from Jobber
 async function disconnectFromJobber(accessToken) {
-  if (!accessToken) return false;
-
   try {
-    const response = await axios.post(
-      config.JOBBER_GRAPHQL_URL,
-      {
-        query: `mutation { appDisconnect { app { id } userErrors { message } } }`,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
-        },
-      }
+    await jobberQuery(
+      accessToken,
+      `mutation { appDisconnect { app { id } userErrors { message } } }`
     );
-    console.log("Disconnected from Jobber:", response.data);
     return true;
-  } catch (error) {
-    console.error("Error disconnecting:", error.message);
+  } catch (e) {
+    console.error("Error disconnecting:", e.message);
     return false;
   }
 }
 
-// Helper: Fetch property data from ATTOM API
-async function fetchAttomPropertyData(address) {
-  if (!address || !address.street1) return null;
+// ============ SETUP ACCOUNT ============
+
+async function setupAccount(accessToken) {
+  const accountInfo = await getAccountInfo(accessToken);
+  if (!accountInfo) throw new Error("Could not get account info");
+
+  const { id: accountId, industry } = accountInfo;
+  console.log(`Setting up account ${accountId} (${industry})`);
+
+  // Check if already set up
+  const existing = getAccount(accountId);
+  if (existing?.customFields && Object.keys(existing.customFields).length > 0) {
+    console.log("Account already set up, updating token");
+    saveAccount(accountId, { accessToken });
+    return accountId;
+  }
+
+  // Create custom fields for this industry
+  const fieldKeys = getFieldsForIndustry(industry);
+  const customFields = {};
+
+  console.log(`Creating custom fields for ${industry}:`, fieldKeys);
+  for (const key of fieldKeys) {
+    const field = ALL_FIELDS[key];
+    const created = await createCustomField(accessToken, field.name);
+    if (created) {
+      customFields[key] = created.id;
+      console.log(`Created: ${field.name} -> ${created.id}`);
+    }
+  }
+
+  saveAccount(accountId, { accessToken, industry, customFields });
+  console.log("Account setup complete");
+  return accountId;
+}
+
+// ============ ATTOM API ============
+
+async function fetchAttomData(address) {
+  if (!address?.street1) return null;
 
   try {
-    // Format address1: street number and name (e.g., "1001 W JEFFERSON AVE")
     const address1 = address.street1.toUpperCase();
+    const address2 = [address.city, address.province, address.postalCode]
+      .filter(Boolean)
+      .join(", ")
+      .toUpperCase();
 
-    // Format address2: city, state/province postalCode (e.g., "DETROIT, MI 48226")
-    const address2Parts = [
-      address.city,
-      address.province,
-      address.postalCode,
-    ].filter(Boolean);
-    const address2 = address2Parts.join(", ").toUpperCase();
-
-    console.log("Fetching ATTOM data for:", { address1, address2 });
-
+    console.log("Fetching ATTOM data:", { address1, address2 });
     const response = await axios.get(ATTOM_API_URL, {
       params: { address1, address2 },
-      headers: {
-        Accept: "application/json",
-        apikey: ATTOM_API_KEY,
-      },
+      headers: { Accept: "application/json", apikey: ATTOM_API_KEY },
     });
-
     console.log("ATTOM response received");
     return response.data;
-  } catch (error) {
-    console.error(
-      "Error fetching ATTOM data:",
-      error.response?.data || error.message
-    );
-    return { error: error.response?.data || error.message };
+  } catch (e) {
+    console.error("ATTOM error:", e.response?.data || e.message);
+    return { error: e.response?.data || e.message };
   }
 }
 
-// Helper: Fetch property details from Jobber
-async function fetchPropertyDetails(propertyId) {
-  if (!storedAccessToken) return null;
+// ============ PROCESS PROPERTY WEBHOOK ============
 
-  try {
-    const response = await axios.post(
-      config.JOBBER_GRAPHQL_URL,
-      {
-        query: `query($id: EncodedId!) { property(id: $id) { address { street1 street2 city province country postalCode } } }`,
-        variables: { id: propertyId },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${storedAccessToken}`,
-          "Content-Type": "application/json",
-          "X-JOBBER-GRAPHQL-VERSION": config.API_VERSION,
-        },
+async function processPropertyWebhook(accountId, propertyId) {
+  const account = getAccount(accountId);
+  if (!account?.accessToken) {
+    console.log("No token for account", accountId);
+    return { propertyDetails: null, attomData: null };
+  }
+
+  // Fetch property details
+  const propertyDetails = await fetchPropertyDetails(
+    account.accessToken,
+    propertyId
+  );
+  if (!propertyDetails?.address) {
+    return { propertyDetails, attomData: null };
+  }
+
+  // Fetch ATTOM data
+  const attomData = await fetchAttomData(propertyDetails.address);
+  if (!attomData || attomData.error) {
+    return { propertyDetails, attomData };
+  }
+
+  // Extract values and update property
+  const attomProperty = attomData.property?.[0];
+  if (attomProperty && account.customFields) {
+    const fieldsToUpdate = [];
+
+    for (const [key, fieldId] of Object.entries(account.customFields)) {
+      const fieldDef = ALL_FIELDS[key];
+      const value = fieldDef?.getValue(attomProperty);
+      if (value !== null && value !== undefined) {
+        fieldsToUpdate.push({ id: fieldId, value });
       }
-    );
-    return response.data.data?.property;
-  } catch (error) {
-    console.error("Error fetching property:", error.message);
-    return null;
+    }
+
+    if (fieldsToUpdate.length > 0) {
+      await updatePropertyFields(
+        account.accessToken,
+        propertyId,
+        fieldsToUpdate
+      );
+    }
   }
+
+  return { propertyDetails, attomData };
 }
 
-// Middleware
+// ============ EXPRESS SETUP ============
+
 app.use(express.json());
 app.use(express.static("public"));
 app.use(
@@ -389,22 +328,24 @@ app.use(
   })
 );
 
-// OAuth: Login
+// OAuth
 app.get("/auth/login", (req, res) => {
-  const authUrl = `${config.JOBBER_AUTH_URL}?client_id=${
-    config.JOBBER_CLIENT_ID
-  }&redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&response_type=code`;
-  res.redirect(authUrl);
+  res.redirect(
+    `${config.JOBBER_AUTH_URL}?client_id=${
+      config.JOBBER_CLIENT_ID
+    }&redirect_uri=${encodeURIComponent(
+      config.REDIRECT_URI
+    )}&response_type=code`
+  );
 });
 
-// OAuth: Callback
 app.get("/auth/callback", async (req, res) => {
   const { code, error } = req.query;
   if (error || !code)
     return res.redirect("/?error=" + (error || "invalid_request"));
 
   try {
-    const response = await axios.post(config.JOBBER_TOKEN_URL, {
+    const tokenResponse = await axios.post(config.JOBBER_TOKEN_URL, {
       grant_type: "authorization_code",
       client_id: config.JOBBER_CLIENT_ID,
       client_secret: config.JOBBER_CLIENT_SECRET,
@@ -412,79 +353,62 @@ app.get("/auth/callback", async (req, res) => {
       redirect_uri: config.REDIRECT_URI,
     });
 
-    req.session.accessToken = response.data.access_token;
-    storedAccessToken = response.data.access_token;
-    disconnectedViaWebhook = false;
-    console.log("Access token stored");
+    const accessToken = tokenResponse.data.access_token;
+    req.session.accessToken = accessToken;
 
-    // Create custom fields after connection (async, don't block redirect)
-    createAllCustomFields(storedAccessToken).catch(console.error);
+    // Setup account (async, don't block redirect)
+    setupAccount(accessToken).catch(console.error);
 
     res.redirect("/");
-  } catch (err) {
-    console.error("Token exchange failed:", err.message);
+  } catch (e) {
+    console.error("Token exchange failed:", e.message);
     res.redirect("/?error=token_exchange_failed");
   }
 });
 
-// Auth status
 app.get("/api/auth/status", (req, res) => {
-  res.json({
-    authenticated: !!req.session.accessToken && !disconnectedViaWebhook,
-  });
+  res.json({ authenticated: !!req.session.accessToken });
 });
 
-// Logout
 app.post("/api/auth/logout", async (req, res) => {
   if (req.session.accessToken) {
     await disconnectFromJobber(req.session.accessToken);
   }
-  storedAccessToken = null;
   req.session.destroy();
   res.json({ success: true });
 });
 
-// Webhook: APP_DISCONNECT
+// Webhooks
 app.post("/webhooks/app-disconnect", (req, res) => {
   res.json({ received: true });
-  console.log(
-    "APP_DISCONNECT received:",
-    req.body.data?.webHookEvent?.accountId
-  );
-  storedAccessToken = null;
-  disconnectedViaWebhook = true;
-  addWebhookEvent(req, null);
+  const accountId = req.body.data?.webHookEvent?.accountId;
+  console.log("APP_DISCONNECT:", accountId);
+
+  if (accountId) {
+    saveAccount(accountId, { accessToken: null });
+  }
+
+  addWebhookEvent(req, null, null);
 });
 
-// Webhook: PROPERTY_CREATE
 app.post("/webhooks/property", async (req, res) => {
   res.json({ received: true });
+
+  const accountId = req.body.data?.webHookEvent?.accountId;
   const propertyId = req.body.data?.webHookEvent?.itemId;
-  const propertyDetails = propertyId
-    ? await fetchPropertyDetails(propertyId)
-    : null;
 
-  // Fetch ATTOM property data if we have an address
-  let attomData = null;
-  if (propertyDetails?.address) {
-    attomData = await fetchAttomPropertyData(propertyDetails.address);
-  }
-
-  // Update property with ATTOM data via custom fields
-  if (attomData && !attomData.error && propertyId && storedAccessToken) {
-    await updatePropertyCustomFields(propertyId, attomData, storedAccessToken);
-  }
-
+  const { propertyDetails, attomData } = await processPropertyWebhook(
+    accountId,
+    propertyId
+  );
   addWebhookEvent(req, propertyDetails, attomData);
 });
 
-function addWebhookEvent(req, propertyDetails, attomData = null) {
+function addWebhookEvent(req, propertyDetails, attomData) {
   webhookEvents.unshift({
     id: Date.now(),
     receivedAt: new Date().toISOString(),
-    headers: {
-      "x-jobber-topic": req.headers["x-jobber-topic"],
-    },
+    headers: { "x-jobber-topic": req.headers["x-jobber-topic"] },
     webhookPayload: req.body,
     propertyDetails,
     attomData,
@@ -492,7 +416,6 @@ function addWebhookEvent(req, propertyDetails, attomData = null) {
   if (webhookEvents.length > MAX_EVENTS) webhookEvents.pop();
 }
 
-// Get/clear webhook events
 app.get("/api/webhooks/events", (req, res) =>
   res.json({ events: webhookEvents })
 );
@@ -501,7 +424,7 @@ app.delete("/api/webhooks/events", (req, res) => {
   res.json({ success: true });
 });
 
-// Start server
-app.listen(config.PORT, () => {
-  console.log(`Server: http://localhost:${config.PORT}`);
-});
+// Start
+app.listen(config.PORT, () =>
+  console.log(`Server: http://localhost:${config.PORT}`)
+);
